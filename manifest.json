@@ -1,0 +1,22 @@
+{
+    "manifest_version": 3,
+    "name": "Nepalese Voter List Scraper",
+    "version": "1.4",
+    "description": "Robust scraper that targets pagination through a background service worker.",
+    "permissions": [
+        "activeTab",
+        "scripting",
+        "downloads",
+        "tabs"
+    ],
+    "background": {
+        "service_worker": "background.js"
+    },
+    "action": {
+        "default_popup": "popup.html",
+        "default_title": "Scraping Tool"
+    },
+    "host_permissions": [
+        "*://voterlist.election.gov.np/*"
+    ]
+}
