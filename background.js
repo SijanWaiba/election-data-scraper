@@ -1,8 +1,10 @@
 let allData = [];
 let isScraping = false;
+let isAutoLoading = false;
 let targetTabId = null;
 let nextButtonSelector = null;
 let targetExpectedEntries = null;
+let autoFilename = "voter_list_all_pages.csv";
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === "button_selected") {
@@ -20,7 +22,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             allData = [];
             targetExpectedEntries = null; // reset
             targetTabId = request.tabId;
-            nextButtonSelector = nextButtonSelector || request.selector;
+            nextButtonSelector = nextButtonSelector || request.selector || ".next, .paginate_button.next, [title='Next'], a:contains('Next'), button:contains('Next')";
             console.log("Background: Starting scrape on tab ", targetTabId, " with selector ", nextButtonSelector);
 
             scrapeCurrentPageAndProceed();
@@ -28,13 +30,60 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         } else {
             sendResponse({ status: "already_running" });
         }
+    } else if (request.action === "start_auto_flow") {
+        if (!isAutoLoading && !isScraping) {
+            isAutoLoading = true;
+            targetTabId = request.tabId;
+            console.log("Background: Injecting auto loader...");
+
+            chrome.scripting.executeScript({
+                target: { tabId: targetTabId },
+                files: ['auto_loader.js']
+            }, () => {
+                if (chrome.runtime.lastError) {
+                    isAutoLoading = false;
+                    sendResponse({ status: "error" });
+                    return;
+                }
+
+                // Once injected, send the parameters
+                setTimeout(() => {
+                    chrome.tabs.sendMessage(targetTabId, {
+                        action: "init_auto_flow",
+                        indices: request.indices,
+                        waitDelayMs: request.waitDelayMs
+                    });
+                }, 500);
+            });
+            sendResponse({ status: "started" });
+        } else {
+            sendResponse({ status: "already_running" });
+        }
+    } else if (request.action === "auto_flow_complete") {
+        isAutoLoading = false;
+        if (request.success) {
+            autoFilename = request.filename || "voter_list_all_pages.csv";
+            console.log("Background: Auto flow complete. Starting scrape with filename: ", autoFilename);
+
+            // Trigger start scraping
+            isScraping = true;
+            allData = [];
+            targetExpectedEntries = null;
+            nextButtonSelector = "li.next:not(.disabled) a, .paginate_button.next:not(.disabled), [title='Next'], a:contains('Next')"; // Default guess
+            scrapeCurrentPageAndProceed();
+        } else {
+            console.error("Background: Auto flow failed: ", request.error);
+            chrome.runtime.sendMessage({ action: "scraping_error", error: request.error }).catch(() => { });
+        }
     } else if (request.action === "stop_scraping") {
         isScraping = false;
+        isAutoLoading = false;
         exportDataToCSV();
         sendResponse({ status: "stopped" });
     } else if (request.action === "get_status") {
         sendResponse({
             isScraping: isScraping,
+            isAutoLoading: isAutoLoading,
             count: allData.length > 0 ? allData.length - 1 : 0,
             expected: targetExpectedEntries,
             hasSelector: nextButtonSelector !== null
@@ -110,12 +159,33 @@ function clickNextButtonAndWait() {
     chrome.scripting.executeScript({
         target: { tabId: targetTabId },
         func: (selector) => {
-            const btn = document.querySelector(selector);
+            // First try the user-provided or default selector
+            let btn = null;
+            try {
+                btn = document.querySelector(selector);
+            } catch (e) { }
+
+            // If not found, fallback to searching for typical "Next" buttons
+            if (!btn) {
+                const buttons = Array.from(document.querySelectorAll('a, button, li'));
+                btn = buttons.find(b => {
+                    const text = (b.innerText || b.value || "").toLowerCase().trim();
+                    return (text === 'next' || text === 'forward' || text === 'अर्को') &&
+                        b.offsetParent !== null && !b.className.includes('disabled');
+                });
+
+                if (!btn) {
+                    // Try to find an 'a' inside a 'li.next' which is common in pagination
+                    const nextLi = document.querySelector('li.next:not(.disabled)');
+                    if (nextLi) btn = nextLi.querySelector('a') || nextLi;
+                }
+            }
+
             if (btn && !btn.closest('.disabled') && !btn.disabled) {
                 const table = document.querySelector('table.table-bordered, table.table-striped, table#tbl_data, #print_div table') || document.querySelector('table');
                 const currentHtml = table ? table.innerHTML : "";
                 btn.click();
-                return { success: true, oldHtml: currentHtml };
+                return { success: true, oldHtml: currentHtml, foundSelector: true };
             }
             return { success: false };
         },
@@ -208,25 +278,27 @@ function exportDataToCSV() {
         csvContent += row.join(",") + "\r\n";
     });
 
+    let filenameToUse = autoFilename || "voter_list_all_pages.csv";
+
     chrome.runtime.sendMessage({
         action: "trigger_download",
         data: csvContent,
-        filename: "voter_list_all_pages.csv"
+        filename: filenameToUse
     }).catch(() => {
         chrome.scripting.executeScript({
             target: { tabId: targetTabId },
-            func: (csvData) => {
+            func: (csvData, fName) => {
                 const bom = new Uint8Array([0xEF, 0xBB, 0xBF]);
                 const blob = new Blob([bom, csvData], { type: 'text/csv;charset=utf-8;' });
                 const url = URL.createObjectURL(blob);
                 const link = document.createElement("a");
                 link.setAttribute("href", url);
-                link.setAttribute("download", "voter_list_all_pages.csv");
+                link.setAttribute("download", fName);
                 document.body.appendChild(link);
                 link.click();
                 setTimeout(() => { document.body.removeChild(link); URL.revokeObjectURL(url); }, 100);
             },
-            args: [csvContent]
+            args: [csvContent, filenameToUse]
         }).catch(err => console.error("Could not trigger download via active tab either", err));
     });
 }

@@ -24,6 +24,12 @@
                     document.getElementById('selectBtn').style.display = 'none';
                     document.getElementById('startBtn').style.display = 'block';
                     document.getElementById('statusText').innerText = `Status: Ready to scrape!`;
+                } else if (response && response.isAutoLoading) {
+                    document.getElementById('selectBtn').disabled = true;
+                    document.getElementById('startBtn').disabled = true;
+                    if (document.getElementById('autoStartBtn')) document.getElementById('autoStartBtn').disabled = true;
+                    document.getElementById('stopBtn').disabled = false;
+                    document.getElementById('statusText').innerText = `Status: Auto-loading parameters...`;
                 }
             });
         }
@@ -32,6 +38,7 @@
     const btnSelect = document.getElementById('selectBtn');
     const btnStart = document.getElementById('startBtn');
     const btnStop = document.getElementById('stopBtn');
+    const btnAutoStart = document.getElementById('autoStartBtn');
     const txtStatus = document.getElementById('statusText');
 
     if (!btnSelect || !btnStart || !btnStop || !txtStatus) {
@@ -73,6 +80,41 @@
         });
     });
 
+    if (btnAutoStart) {
+        btnAutoStart.addEventListener('click', async () => {
+            if (!currentTabId) return;
+
+            const indicesStr = document.getElementById('autoIndices').value;
+            const delayStr = document.getElementById('autoDelay').value;
+
+            const indices = indicesStr.split(',').map(s => s.trim());
+            const waitDelayMs = (parseInt(delayStr, 10) || 15) * 1000;
+
+            btnAutoStart.disabled = true;
+            btnSelect.disabled = true;
+            btnStart.disabled = true;
+            btnStop.disabled = false;
+            txtStatus.innerText = "Status: Injecting auto-loader...";
+
+            chrome.runtime.sendMessage({
+                action: "start_auto_flow",
+                tabId: currentTabId,
+                indices: indices,
+                waitDelayMs: waitDelayMs
+            }, function (response) {
+                if (chrome.runtime.lastError) {
+                    txtStatus.innerText = "Error starting auto flow.";
+                    resetUI();
+                    return;
+                }
+
+                if (response && response.status === "started") {
+                    txtStatus.innerText = "Status: Auto-loading parameters...";
+                }
+            });
+        });
+    }
+
     btnStop.addEventListener('click', async () => {
         chrome.runtime.sendMessage({ action: "stop_scraping" }, function (response) {
             if (chrome.runtime.lastError) return;
@@ -100,6 +142,8 @@
         } else if (request.action === "selection_cancelled") {
             btnSelect.disabled = false;
             txtStatus.innerText = `Status: Selection cancelled.`;
+        } else if (request.action === "auto_flow_update") {
+            txtStatus.innerText = `Status: Auto-flow: ${request.message}`;
         } else if (request.action === "trigger_download") {
             triggerDownload(request.data, request.filename);
         }
@@ -124,6 +168,8 @@
 
     function resetUI() {
         btnStart.disabled = false;
+        btnSelect.disabled = false;
+        if (btnAutoStart) btnAutoStart.disabled = false;
         btnStop.disabled = true;
     }
 })();
